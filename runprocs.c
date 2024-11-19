@@ -69,6 +69,10 @@ void monitor_processes() {
     }
 }
 
+const char* RP_EXIT_POL_ONESHOT = "oneshot";
+const char* RP_EXIT_POL_RESTART = "restart";
+const char* RP_EXIT_POL_CRITICAL = "critical";
+
 typedef enum {
 	rp_exit_pol_oneshot,
 	rp_exit_pol_restart,
@@ -78,128 +82,91 @@ typedef enum {
 typedef struct {
 	const char *command;
 	rp_exit_pol_t exit_pol;
-} rp_proc_opts_t;
+} rp_opts_t;
 
 typedef struct {
-	rp_proc_opts_t *proc_optss;
+	pid_t pid;
+	pthread_t thread;
+} rp_proc_t;
+
+typedef struct {
+	rp_opts_t *opts;
+	rp_proc_t *procs;
 	int num_procs;
-} rp_procs_opts_t;
 
-const char* RP_EXIT_POL_ONESHOT = "oneshot";
-const char* RP_EXIT_POL_RESTART = "restart";
-const char* RP_EXIT_POL_CRITICAL = "critical";
+	int exited_proc;
+	int proc_to_wait;
+	pthread_cond_t proc_exited_cond;
+	pthread_mutex_t proc_exited_mutex;
+} rp_t;
 
-void rp_proc_opts_init(
-		rp_proc_opts_t *proc_opts
-		) {
-	proc_opts -> exit_pol = rp_exit_pol_critical;
-}
-
-int rp_procs_opts_init(
-		rp_procs_opts_t *procs_opts,
+int rp_init(
+		rp_t *rp,
 		int argc,
 		const char **argv
 		) {
 	int i;
 
-	procs_opts -> num_procs = 0;
+	rp -> num_procs = 0;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp("--", argv[i], 2) != 0) {
-			procs_opts -> num_procs++;
+			rp -> num_procs++;
 		}
 	}
 
-	procs_opts -> proc_optss = (rp_proc_opts_t*) malloc(
-		sizeof(rp_proc_opts_t) * procs_opts -> num_procs
+	rp -> opts = (rp_opts_t*) malloc(
+		sizeof(rp_opts_t) * rp -> num_procs
 		);
 
-	for (i = 0; i < procs_opts -> num_procs; i++) {
-		rp_proc_opts_init(procs_opts -> proc_optss + i);
-	}
+	rp -> procs = (rp_proc_t*) malloc(
+		sizeof(rp_proc_t) * rp -> num_procs
+		);
 
-	return 0;
-}
-
-int rp_procs_opts_parse_argv(rp_procs_opts_t *procs_opts, int argc, const char **argv) {
-	int i;
-	int i_proc;
-
-	i_proc = 0;
+	int i_proc = 0;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp("--", argv[i], 2) == 0) {
-			if (i_proc >= procs_opts -> num_procs) {
+			if (i_proc >= rp -> num_procs) {
 				puts("Err.");
 			}
 
 			if (strcmp(RP_EXIT_POL_ONESHOT, argv[i] + 2) == 0) {
-				procs_opts -> proc_optss[i_proc].exit_pol =
-					rp_exit_pol_oneshot;
+				rp -> opts[i_proc].exit_pol = rp_exit_pol_oneshot;
 			}
 			else if (strcmp(RP_EXIT_POL_RESTART, argv[i] + 2) == 0) {
-				procs_opts -> proc_optss[i_proc].exit_pol =
-					rp_exit_pol_restart;
+				rp -> opts[i_proc].exit_pol = rp_exit_pol_restart;
 			}
 			else if (strcmp(RP_EXIT_POL_CRITICAL, argv[i] + 2) == 0) {
-				procs_opts -> proc_optss[i_proc].exit_pol =
-					rp_exit_pol_critical;
+				rp -> opts[i_proc].exit_pol = rp_exit_pol_critical;
 			}
 			else {
 				puts("Unknown!\n");
 			}
 		}
 		else {
-			procs_opts -> proc_optss[i_proc].command =
-				argv[i];
+			rp -> opts[i_proc].command = argv[i];
 			i_proc++;
 		}
 	}
 
+	pthread_cond_init(&(rp -> proc_exited_cond), NULL);
+	pthread_mutex_init(&(rp -> proc_exited_mutex), NULL);
+	rp -> exited_proc = -1;
+
 	return 0;
 }
 
-typedef struct {
-	rp_procs_opts_t procs_opts;
-	pid_t *pids;
-	int exited_proc;
-	int proc_to_wait;
-	pthread_cond_t proc_exited_cond;
-	pthread_mutex_t proc_exited_mutex;
-} rp_ctx_t;
-
-void rp_ctx_init(
-		rp_ctx_t *ctx,
-		int argc,
-		const char **argv
-		) {
-	rp_procs_opts_init(&(ctx -> procs_opts), argc, argv);
-	/*
-	ctx -> proc_exited_cond = PTHREAD_COND_INITIALIZER;
-	ctx -> proc_exited_mutex = PTHREAD_MUTEX_INITIALIZER;
-	*/
-	pthread_cond_init(&(ctx -> proc_exited_cond), NULL);
-	pthread_mutex_init(&(ctx -> proc_exited_mutex), NULL);
-
-	ctx -> pids = (pid_t*)
-		malloc(sizeof(pid_t) * ctx -> procs_opts.num_procs);
-
-	ctx -> exited_proc = -1;
-}
-
-int rp_ctx_parse_argv(rp_ctx_t *ctx, int argc, const char **argv) {
-	rp_procs_opts_parse_argv(&(ctx -> procs_opts), argc, argv);
-}
-
-int rp_ctx_start_proc(rp_ctx_t *ctx, int proc_num) {
+int rp_start_proc(rp_t *rp, int proc_num) {
     pid_t pid = fork();
     if (pid == 0) {
         // Child process
-        execl("/bin/sh", "sh", "-c", ctx -> procs_opts.proc_optss[proc_num].command, (char *)NULL);
+        execl("/bin/sh", "sh", "-c", rp -> opts[proc_num].command, (char *)NULL);
         exit(1);
-    } else if (pid > 0) {
+    }
+	else if (pid > 0) {
         // Parent process
-        ctx -> pids[proc_num] = pid;
+        rp -> procs[proc_num].pid = pid;
         /*snprintf(processes[process_count].command, sizeof(processes[process_count].command), "%s", command);*/
         /*process_count++;*/
         /*printf("Started process: %s\n", command);*/
@@ -208,50 +175,65 @@ int rp_ctx_start_proc(rp_ctx_t *ctx, int proc_num) {
     }
 }
 
-void* rp_ctx_wait_proc_thread(void *ctx_as_void) {
-	rp_ctx_t *ctx = (rp_ctx_t*)(ctx_as_void);
-	int proc_num = ctx -> proc_to_wait;
+typedef struct {
+	rp_t *rp;
+	int proc_num;
+} rp_wait_proc_args_t;
 
-	pid_t pid = ctx -> pids[proc_num];
+void* rp_wait_proc_thread(void *args_p) {
+	rp_wait_proc_args_t *args = args_p;
+	rp_t *rp = args -> rp;
+	int proc_num = args -> proc_num;
+
+	free(args);
+
+	pid_t pid = rp -> procs[proc_num].pid;
 	int status;
 
 	// Hang until it exits
 	pid_t result = waitpid(pid, &status, 0);
 	// Okay, it exited
 	
-	pthread_mutex_lock(&(ctx -> proc_exited_mutex));
-	pthread_cond_signal(&(ctx -> proc_exited_cond));
-	ctx -> exited_proc = proc_num;
-	pthread_mutex_unlock(&(ctx -> proc_exited_mutex));
+	pthread_mutex_lock(&(rp -> proc_exited_mutex));
+	pthread_cond_signal(&(rp -> proc_exited_cond));
+	rp -> exited_proc = proc_num;
+	pthread_mutex_unlock(&(rp -> proc_exited_mutex));
 
 	return NULL;
 }
 
-void* rp_ctx_wait_proc(rp_ctx_t *ctx, int proc_num) {
-	ctx -> proc_to_wait = proc_num;
+void* rp_wait_proc(rp_t *rp, int proc_num) {
+	/* Dynamically allocate it because otherwise
+	 * it will go out of scope once this function exits,
+	 * and the thread will be left with garbage data
+	 */
+	rp_wait_proc_args_t *args = malloc(sizeof(rp_wait_proc_args_t));
+	args -> rp = rp;
+	args -> proc_num = proc_num;
+
 	pthread_t thread_id;
-	pthread_create(&thread_id, NULL, rp_ctx_wait_proc_thread, ctx);
+	pthread_create(&thread_id, NULL, rp_wait_proc_thread, args);
 }
 
-int rp_ctx_wait_till_exit(rp_ctx_t *ctx) {
-	pthread_mutex_lock(&(ctx -> proc_exited_mutex));
-	pthread_cond_wait(&(ctx -> proc_exited_cond), &(ctx -> proc_exited_mutex));
-	pthread_mutex_unlock(&(ctx -> proc_exited_mutex));
+int rp_wait_exit(rp_t *rp) {
+	pthread_mutex_lock(&(rp -> proc_exited_mutex));
+	pthread_cond_wait(&(rp -> proc_exited_cond), &(rp -> proc_exited_mutex));
+	pthread_mutex_unlock(&(rp -> proc_exited_mutex));
 }
 
-int rp_ctx_handle_exit(rp_ctx_t *ctx) {
+int rp_handle_exit(rp_t *rp) {
 	/* assert ctx -> exited_proc >= 0 */
-	pthread_mutex_lock(&(ctx -> proc_exited_mutex));
+	pthread_mutex_lock(&(rp -> proc_exited_mutex));
 
-	printf("Proc number %i exited.\n", ctx -> exited_proc);
+	printf("Proc number %i exited.\n", rp -> exited_proc);
 
-	switch (ctx -> procs_opts.proc_optss[ctx -> exited_proc].exit_pol) {
+	switch (rp -> opts[rp -> exited_proc].exit_pol) {
 		case rp_exit_pol_oneshot:
 			break;
 		case rp_exit_pol_restart:
 
-			rp_ctx_start_proc(ctx, ctx -> exited_proc);
-			rp_ctx_wait_proc(ctx, ctx -> exited_proc);
+			rp_start_proc(rp, rp -> exited_proc);
+			rp_wait_proc(rp, rp -> exited_proc);
 
 			break;
 		case rp_exit_pol_critical:
@@ -261,22 +243,23 @@ int rp_ctx_handle_exit(rp_ctx_t *ctx) {
 			break;
 	}
 
-	ctx -> exited_proc = -1;
+	rp -> exited_proc = -1;
 
-	pthread_mutex_unlock(&(ctx -> proc_exited_mutex));
+	pthread_mutex_unlock(&(rp -> proc_exited_mutex));
 }
 
-int rp_ctx_supervise(rp_ctx_t *ctx) {
-	for (int i = 0; i < ctx -> procs_opts.num_procs; i++) {
-		rp_ctx_start_proc(ctx, i);
-		rp_ctx_wait_proc(ctx, i);
+int rp_supervise(rp_t *rp) {
+	for (int i = 0; i < rp -> num_procs; i++) {
+		rp_start_proc(rp, i);
+		rp_wait_proc(rp, i);
 	}
 
 	for (;;) {
-		rp_ctx_wait_till_exit(ctx);
-		rp_ctx_handle_exit(ctx);
+		rp_wait_exit(rp);
+		rp_handle_exit(rp);
 	}
 }
+
 
 int main(int argc, const char **argv) {
 	/*
@@ -285,13 +268,12 @@ int main(int argc, const char **argv) {
 
     monitor_processes();
 	*/
-	rp_ctx_t ctx;
-	rp_ctx_init(&ctx, argc - 1, argv + 1);
-	rp_ctx_parse_argv(&ctx, argc - 1, argv + 1);
+	rp_t rp;
+	rp_init(&rp, argc - 1, argv + 1);
 
 	/*rp_ctx_watch_procs(&ctx);*/
 
-	rp_ctx_supervise(&ctx);
+	rp_supervise(&rp);
 
 	/*pthread_join(thread_id, NULL);*/
 
