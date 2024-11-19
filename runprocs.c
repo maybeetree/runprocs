@@ -96,6 +96,7 @@ typedef struct {
 
 	int exited_proc;
 	int proc_to_wait;
+	int is_dying;
 	pthread_cond_t proc_exited_cond;
 	pthread_mutex_t proc_exited_mutex;
 } rp_t;
@@ -153,6 +154,7 @@ int rp_init(
 	pthread_cond_init(&(rp -> proc_exited_cond), NULL);
 	pthread_mutex_init(&(rp -> proc_exited_mutex), NULL);
 	rp -> exited_proc = -1;
+	rp -> is_dying = 0;
 
 	return 0;
 }
@@ -221,11 +223,26 @@ int rp_wait_exit(rp_t *rp) {
 	pthread_mutex_unlock(&(rp -> proc_exited_mutex));
 }
 
+int rp_die(rp_t *rp) {
+	rp -> is_dying = 1;
+	for (int i = 0; i < rp -> num_procs; i++) {
+		kill(rp -> procs[i].pid, SIGTERM);
+		/*waitpid(rp -> procs[i].pid, NULL, 0);*/
+		fprintf(stderr, "Kill %i\n", rp -> procs[i].pid);
+	}
+}
+
 int rp_handle_exit(rp_t *rp) {
 	/* assert ctx -> exited_proc >= 0 */
 	pthread_mutex_lock(&(rp -> proc_exited_mutex));
 
-	printf("Proc number %i exited.\n", rp -> exited_proc);
+	fprintf(stderr, "Proc number %i exited.\n", rp -> exited_proc);
+
+	if (rp -> is_dying) {
+		fprintf(stderr, "Am dying, no restart.\n");
+		pthread_mutex_unlock(&(rp -> proc_exited_mutex));
+		return 0;
+	}
 
 	switch (rp -> opts[rp -> exited_proc].exit_pol) {
 		case rp_exit_pol_oneshot:
@@ -237,6 +254,9 @@ int rp_handle_exit(rp_t *rp) {
 
 			break;
 		case rp_exit_pol_critical:
+
+			rp_die(rp);
+
 			break;
 		default:
 			/* panic */
@@ -254,12 +274,13 @@ int rp_supervise(rp_t *rp) {
 		rp_wait_proc(rp, i);
 	}
 
-	for (;;) {
+	while (!(rp -> is_dying)) {
 		rp_wait_exit(rp);
 		rp_handle_exit(rp);
 	}
-}
 
+	fprintf(stderr, "Bye!\n");
+}
 
 int main(int argc, const char **argv) {
 	/*
