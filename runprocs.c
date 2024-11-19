@@ -97,6 +97,7 @@ typedef struct {
 	int exited_proc;
 	int proc_to_wait;
 	int is_dying;
+	int procs_left;
 	pthread_cond_t proc_exited_cond;
 	pthread_mutex_t proc_exited_mutex;
 } rp_t;
@@ -155,6 +156,7 @@ int rp_init(
 	pthread_mutex_init(&(rp -> proc_exited_mutex), NULL);
 	rp -> exited_proc = -1;
 	rp -> is_dying = 0;
+	rp -> procs_left = rp -> num_procs;
 
 	return 0;
 }
@@ -246,6 +248,15 @@ int rp_handle_exit(rp_t *rp) {
 
 	switch (rp -> opts[rp -> exited_proc].exit_pol) {
 		case rp_exit_pol_oneshot:
+
+			if (--(rp -> procs_left) <= 0) {
+				fprintf(
+					stderr,
+					"All procs were oneshot and all have exited.\n"
+					);
+				rp_die(rp);
+			}
+
 			break;
 		case rp_exit_pol_restart:
 
