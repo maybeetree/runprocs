@@ -1,3 +1,11 @@
+CFLAGS=-ansi -pedantic -Wextra -Werror -g -Wfatal-errors
+
 default:
-	gcc -ansi -pedantic -Wextra -Werror -g -Wfatal-errors ./runprocs.c -o runprocs
+	gcc ${CFLAGS} ./runprocs.c -o runprocs
+
+static:
+	gcc -static ${CFLAGS} ./runprocs.c -o runprocs
+
+workflow:
+	musl-gcc -static ${CFLAGS} ./runprocs.c -o runprocs
 
