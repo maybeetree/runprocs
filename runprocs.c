@@ -9,9 +9,26 @@
 
 #define MAX_PROCESSES 10
 
+#define RP_MAX_ERR_STRING 255
+
 const char* RP_EXIT_POL_ONESHOT = "oneshot";
 const char* RP_EXIT_POL_RESTART = "restart";
 const char* RP_EXIT_POL_CRITICAL = "critical";
+
+enum rp_return_t {
+	rp_success,
+	rp_unknown_arg,
+	rp_stray_arg,
+	rp_num_codes
+};
+typedef enum rp_return_t rp_return_t;
+
+const char *rp_code_strings[rp_num_codes + 1] = {
+	"Sucess",
+	"Unknown argument",
+	"Stray argument",
+	"Unknown error"
+};
 
 enum rp_exit_pol_t {
 	rp_exit_pol_oneshot,
@@ -26,12 +43,13 @@ struct rp_opts_t {
 };
 typedef struct rp_opts_t rp_opts_t;
 
-typedef struct {
+struct rp_proc_t {
 	pid_t pid;
 	pthread_t thread;
-} rp_proc_t;
+};
+typedef struct rp_proc_t rp_proc_t;
 
-typedef struct {
+struct rp_t {
 	rp_opts_t *opts;
 	rp_proc_t *procs;
 	int num_procs;
@@ -42,9 +60,14 @@ typedef struct {
 	int procs_left;
 	pthread_cond_t proc_exited_cond;
 	pthread_mutex_t proc_exited_mutex;
-} rp_t;
 
-int rp_init(
+	rp_return_t err;
+	const char *err_string;
+	char err_string_buf[RP_MAX_ERR_STRING];
+};
+typedef struct rp_t rp_t;
+
+rp_return_t rp_init(
 		rp_t *rp,
 		int argc,
 		const char **argv
@@ -72,7 +95,17 @@ int rp_init(
 	for (i = 0; i < argc; i++) {
 		if (strncmp("--", argv[i], 2) == 0) {
 			if (i_proc >= rp -> num_procs) {
-				puts("Err.");
+
+				rp -> err = rp_stray_arg;
+				rp -> err_string = rp -> err_string_buf;
+				snprintf(
+					rp -> err_string_buf,
+					RP_MAX_ERR_STRING,
+					"Stray argument `%s` at position %i.",
+					argv[i],
+					i + 1
+					);
+				return rp_stray_arg;
 			}
 
 			if (strcmp(RP_EXIT_POL_ONESHOT, argv[i] + 2) == 0) {
@@ -85,7 +118,17 @@ int rp_init(
 				rp -> opts[i_proc].exit_pol = rp_exit_pol_critical;
 			}
 			else {
-				puts("Unknown!\n");
+
+				rp -> err = rp_unknown_arg;
+				rp -> err_string = rp -> err_string_buf;
+				snprintf(
+					rp -> err_string_buf,
+					RP_MAX_ERR_STRING,
+					"Unknown argument `%s` at position %i.",
+					argv[i],
+					i + 1
+					);
+				return rp_unknown_arg;
 			}
 		}
 		else {
@@ -99,6 +142,7 @@ int rp_init(
 	rp -> exited_proc = -1;
 	rp -> is_dying = 0;
 	rp -> procs_left = rp -> num_procs;
+	rp -> err_string = NULL;
 
 	return 0;
 }
@@ -245,6 +289,29 @@ int rp_supervise(rp_t *rp) {
 	fprintf(stderr, "Bye!\n");
 }
 
+rp_return_t rp_set_err(rp_t *rp, rp_return_t return_code, char* comment) {
+
+}
+
+void rp_err(rp_t *rp) {
+	rp_return_t return_code;
+
+	return_code = rp -> err;
+
+	if (return_code == rp_success) {
+		return;
+	}
+	if (return_code >= rp_num_codes) {
+		return_code = rp_num_codes;
+	}
+	fprintf(stderr, "Error: %s", rp_code_strings[return_code]);
+	if (rp -> err_string) {
+		fprintf(stderr, ": %s", rp -> err_string);
+	}
+	fprintf(stderr, "\n");
+	exit(-return_code);
+}
+
 int main(int argc, const char **argv) {
 	/*
     start_process("for i in $(seq 2); do echo 'Process 1 $i'; sleep 2; done");
@@ -253,7 +320,9 @@ int main(int argc, const char **argv) {
     monitor_processes();
 	*/
 	rp_t rp;
+
 	rp_init(&rp, argc - 1, argv + 1);
+	rp_err(&rp);
 
 	/*rp_ctx_watch_procs(&ctx);*/
 
