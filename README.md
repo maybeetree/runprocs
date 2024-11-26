@@ -31,7 +31,7 @@ and
 ## Installation
 
 - compile with `make` or download a static binary from the
-    [releases page]().
+    [releases page](https://github.com/maybeetree/runprocs/releases).
 
 ## Examples
 
